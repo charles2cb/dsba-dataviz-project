@@ -9,7 +9,7 @@ alt.data_transformers.disable_max_rows()
 # Page config
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Media Lens – US Political News Coverage",
+    page_title="Media Polarization in the United States",
     page_icon="📰",
     layout="wide",
 )
@@ -110,6 +110,11 @@ TOPIC_COLORS = {
     "Political Figures": "#f06595",
 }
 
+OUTLET_DOMAIN = list(OUTLET_COLORS.keys())
+OUTLET_RANGE = list(OUTLET_COLORS.values())
+TOPIC_DOMAIN = list(TOPIC_COLORS.keys())
+TOPIC_RANGE = list(TOPIC_COLORS.values())
+
 # ---------------------------------------------------------------------------
 # Data loading & cleaning (cached)
 # ---------------------------------------------------------------------------
@@ -133,28 +138,15 @@ def load_data():
     ].copy()
 
     # 3. Null-out missing data: when volume == 0 the outlet had no articles,
-    #    so the corresponding tone value is meaningless and must also be null.
-    #    Build a set of (date, outlet, topic) keys where volume is zero.
-    vol_mask = (tone_vol["metric"] == "volume") & (tone_vol["value"] == 0)
-    missing_keys = tone_vol.loc[vol_mask, ["date", "outlet", "topic"]]
-
-    #    Mark volume == 0 rows as NaN
-    tone_vol.loc[vol_mask, "value"] = pd.NA
-
-    #    Also mark the matching tone rows as NaN
-    tone_idx = tone_vol[tone_vol["metric"] == "tone"].merge(
-        missing_keys, on=["date", "outlet", "topic"], how="inner"
-    ).index
-    # Use merge indicator to find tone rows whose (date, outlet, topic) is in missing_keys
-    tone_rows = tone_vol[tone_vol["metric"] == "tone"].copy()
-    tone_rows["_drop"] = False
-    merged = tone_rows[["date", "outlet", "topic"]].reset_index().merge(
-        missing_keys, on=["date", "outlet", "topic"], how="inner"
-    )
-    tone_vol.loc[merged["index"], "value"] = pd.NA
-
-    #    Drop all NaN value rows
-    tone_vol = tone_vol.dropna(subset=["value"]).copy()
+    #    so the matching tone value is also invalid.
+    zero_keys = tone_vol.loc[
+        (tone_vol["metric"] == "volume") & (tone_vol["value"] == 0),
+        ["date", "outlet", "topic"],
+    ].drop_duplicates()
+    tone_vol = tone_vol.merge(zero_keys.assign(_zero=1), on=["date", "outlet", "topic"], how="left")
+    tone_vol.loc[(tone_vol["metric"] == "volume") & (tone_vol["value"] == 0), "value"] = pd.NA
+    tone_vol.loc[(tone_vol["metric"] == "tone") & (tone_vol["_zero"] == 1), "value"] = pd.NA
+    tone_vol = tone_vol.drop(columns="_zero").dropna(subset=["value"]).copy()
 
     topic_share.loc[topic_share["value"] == 0, "value"] = pd.NA
     topic_share = topic_share.dropna(subset=["value"]).copy()
@@ -207,9 +199,8 @@ def load_data():
 
 tone_vol, topic_share, events_df = load_data()
 
-# Split tone and volume
+# Split tone
 tone_df = tone_vol[tone_vol["metric"] == "tone"].copy()
-volume_df = tone_vol[tone_vol["metric"] == "volume"].copy()
 
 OUTLETS = sorted(tone_df["outlet"].unique())
 TOPICS = sorted(tone_df["topic"].unique())
@@ -251,13 +242,11 @@ with st.sidebar:
     st.markdown("### Data Quality")
     st.markdown(
         "<small>"
-        "**Cleaning applied:** removed 2026 (incomplete), replaced zero-value "
-        "gaps with NaN, capped tone outliers at +/-10, dropped the 2025-12-06 "
-        "blackout date.<br><br>"
-        "**Note:** WSJ data degrades from Feb 2024; Politico & WashingtonPost "
-        "drop out from Sep 2024. NYTimes is partially degraded from late 2024. "
-        "Consider narrowing the year range or deselecting these outlets for "
-        "the most recent period."
+        "**Cleaning applied:** removed 2026 (incomplete), replaced zero-volume "
+        "rows with NaN and dropped matching tone rows, capped tone outliers at +/-10, "
+        "dropped the 2025-12-06 blackout date.<br><br>"
+        "**Note:** late-period outlet/topic coverage can be sparse for some combinations; "
+        "use filters to inspect robust subsets."
         "</small>",
         unsafe_allow_html=True,
     )
@@ -283,7 +272,6 @@ def apply_filters(df):
 
 
 tone_f = apply_filters(tone_df)
-volume_f = apply_filters(volume_df)
 topic_share_f = apply_filters(topic_share)
 events_f = events_df[
     (events_df["event_date"].dt.year >= year_range[0])
@@ -312,47 +300,92 @@ def smooth(df, value_col="value", window=30):
 
 
 tone_smooth = smooth(tone_f.copy(), "value", smoothing)
-volume_smooth = smooth(volume_f.copy(), "value", smoothing)
+
+
+def section(title, desc):
+    st.markdown(f'<p class="section-header">{title}</p>', unsafe_allow_html=True)
+    st.markdown(f'<p class="section-desc">{desc}</p>', unsafe_allow_html=True)
+
+
+def insight(text):
+    st.markdown(f'<div class="insight-box">{text}</div>', unsafe_allow_html=True)
+
+
+def zero_rule(axis="y", value=0, color="gray", dash=(4, 4)):
+    chart = alt.Chart(pd.DataFrame({axis: [value]})).mark_rule(strokeDash=list(dash), color=color)
+    return chart.encode(**{axis: f"{axis}:Q"})
+
+
+def fmt_compact(n):
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n/1_000:.0f}K+"
+    return str(n)
+
+
+def outlet_color(title="Outlet", legend=None):
+    return alt.Color(
+        "outlet:N",
+        title=title,
+        scale=alt.Scale(domain=OUTLET_DOMAIN, range=OUTLET_RANGE),
+        legend=legend,
+    )
+
+
+def topic_color(title="Topic", legend=None):
+    return alt.Color(
+        "topic:N",
+        title=title,
+        scale=alt.Scale(domain=TOPIC_DOMAIN, range=TOPIC_RANGE),
+        legend=legend,
+    )
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HERO SECTION
 # ═══════════════════════════════════════════════════════════════════════════
-st.markdown('<p class="hero-title">Media Lens</p>', unsafe_allow_html=True)
+st.markdown(
+    '<p class="hero-title">Media Polarization in the United States over the last 10 years</p>',
+    unsafe_allow_html=True,
+)
 st.markdown(
     '<p class="hero-subtitle">'
-    "Exploring how America's top news outlets cover politics — "
-    "what they talk about, and the tone they use."
+    "Exploring how major US news outlets cover politics: what they emphasize and how tone changes over time."
     "</p>",
     unsafe_allow_html=True,
 )
 
+date_min = tone_f["date"].min().date()
+date_max = tone_f["date"].max().date()
+years_count = tone_f["year"].nunique()
+outlets_count = tone_f["outlet"].nunique()
+topics_count = tone_f["topic"].nunique()
+tone_points = len(tone_f)
+
 st.markdown(
-    "Political news shapes public opinion, yet different outlets can paint "
-    "vastly different pictures of the same events. This tool lets you explore "
-    "**9 years** of coverage data from **7 major US news outlets** across "
-    "**6 key political topics**, powered by the GDELT Project's global news "
-    "monitoring database."
+    f"This dashboard uses the current filtered slice of GDELT data "
+    f"(**{date_min} to {date_max}**, **{years_count} years**) across "
+    f"**{outlets_count} outlets** and **{topics_count} political topics**."
 )
 
 # Key metrics
-n_articles_proxy = len(volume_f)
 st.markdown(f"""
 <div class="metric-row">
     <div class="metric-card">
-        <div class="num">7</div>
+        <div class="num">{outlets_count}</div>
         <div class="label">News Outlets</div>
     </div>
     <div class="metric-card">
-        <div class="num">6</div>
+        <div class="num">{topics_count}</div>
         <div class="label">Political Topics</div>
     </div>
     <div class="metric-card">
-        <div class="num">9</div>
+        <div class="num">{years_count}</div>
         <div class="label">Years of Data</div>
     </div>
     <div class="metric-card">
-        <div class="num">270K+</div>
-        <div class="label">Daily Measurements</div>
+        <div class="num">{fmt_compact(tone_points)}</div>
+        <div class="label">Tone Measurements</div>
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -416,17 +449,11 @@ def smooth_topic_share(df, window):
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION 1: Topic Evolution Heatmap  ★ MAIN VISUALIZATION ★
 # ═══════════════════════════════════════════════════════════════════════════
-st.markdown(
-    '<p class="section-header">1 &middot; Topic Evolution Heatmap</p>',
-    unsafe_allow_html=True,
-)
-st.markdown(
-    '<p class="section-desc">'
-    "Click a cell to view outlet-level tone breakdown. "
-    "Cells with an <b>i</b> marker include relevant US political events for that topic/period. "
-    "Use the sidebar to switch yearly, semesterly, or quarterly granularity."
-    "</p>",
-    unsafe_allow_html=True,
+section(
+    "1 &middot; Topic Evolution Heatmap",
+    "Click a cell to view outlet-level tone. Cells with an <b>i</b> marker include relevant "
+    "US political events for that topic/period. Use the sidebar to switch yearly, semesterly, "
+    "or quarterly granularity.",
 )
 
 TOPIC_ORDER = [
@@ -600,7 +627,11 @@ heatmap_base = alt.Chart(topic_period_rich).encode(
         "period_label:O",
         sort=period_order,
         title=time_axis_title,
-        axis=alt.Axis(labelAngle=0, labelFontSize=13, titleFontSize=13),
+        axis=alt.Axis(
+            labelAngle=0 if heatmap_granularity == "Yearly" else -35,
+            labelFontSize=13,
+            titleFontSize=13,
+        ),
     ),
     y=alt.Y(
         "topic:N",
@@ -656,7 +687,8 @@ marker_i = alt.Chart(event_markers).mark_text(
 )
 
 heatmap_chart = (heatmap_rects + heatmap_text + marker_i).add_params(cell_sel).properties(
-    height=420,
+    width=min(1800, max(900, 42 * len(period_order))),
+    height=max(340, 56 * len(y_sorted)),
     title=alt.Title(
         text="How tone for each topic changed over time",
         subtitle="Click for outlet details. Cells with i include event annotations.",
@@ -679,14 +711,7 @@ outlet_bars = (
             axis=alt.Axis(labelAngle=-25, labelFontSize=12),
         ),
         y=alt.Y("avg_tone:Q", title="Avg Tone", scale=alt.Scale(zero=False)),
-        color=alt.Color(
-            "outlet:N",
-            scale=alt.Scale(
-                domain=list(OUTLET_COLORS.keys()),
-                range=list(OUTLET_COLORS.values()),
-            ),
-            legend=None,
-        ),
+        color=outlet_color(legend=None),
         tooltip=[
             alt.Tooltip("topic:N", title="Topic"),
             alt.Tooltip("period_label:N", title=time_axis_title),
@@ -695,8 +720,9 @@ outlet_bars = (
         ],
     )
 )
-outlet_zero = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(strokeDash=[4, 4], color="gray").encode(y="y:Q")
+outlet_zero = zero_rule("y", 0)
 outlet_chart = (outlet_bars + outlet_zero).properties(
+    width=min(1800, max(900, 42 * len(period_order))),
     height=270,
     title="Outlet tone breakdown (click a heatmap cell)",
 )
@@ -721,6 +747,7 @@ event_panel_text = event_panel_base.mark_text(align="left", dx=16, fontSize=12).
     color=alt.condition("datum.is_fallback", alt.value("#6b7280"), alt.value("#1f2937")),
 )
 event_panel_chart = (event_panel_marks + event_panel_text).properties(
+    width=min(1800, max(900, 42 * len(period_order))),
     height=150,
     title="Event notes for selected cell",
 )
@@ -740,15 +767,9 @@ st.markdown("---")
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION 2: Topic share over time (with event annotations)
 # ═══════════════════════════════════════════════════════════════════════════
-st.markdown(
-    '<p class="section-header">2 &middot; What Topics Dominate the News?</p>',
-    unsafe_allow_html=True,
-)
-st.markdown(
-    '<p class="section-desc">'
-    "See how topic share changes over time, with event markers and multi-outlet selection."
-    "</p>",
-    unsafe_allow_html=True,
+section(
+    "2 &middot; What Topics Dominate the News?",
+    "See how topic share changes over time, with event markers and multi-outlet selection.",
 )
 
 outlet_options = ["All outlets"] + selected_outlets
@@ -792,14 +813,7 @@ stacked_area = (
             scale=alt.Scale(domain=[0, 1]),
             axis=alt.Axis(format="%"),
         ),
-        color=alt.Color(
-            "topic:N",
-            title="Topic",
-            scale=alt.Scale(
-                domain=list(TOPIC_COLORS.keys()),
-                range=list(TOPIC_COLORS.values()),
-            ),
-        ),
+        color=topic_color(),
         opacity=alt.condition(topic_selection, alt.value(1), alt.value(0.25)),
         tooltip=[
             "month:T",
@@ -817,16 +831,9 @@ events_topic_overlay = events_f[events_f["topic"].isin(ts_monthly["topic"].uniqu
 if events_topic_overlay.empty:
     topic_share_chart = stacked_area
 else:
-    event_rules = alt.Chart(events_topic_overlay).mark_rule(opacity=0.2).encode(
+    event_rules = alt.Chart(events_topic_overlay).mark_rule(opacity=0.28, strokeWidth=10).encode(
         x=alt.X("event_date:T"),
-        color=alt.Color(
-            "topic:N",
-            scale=alt.Scale(
-                domain=list(TOPIC_COLORS.keys()),
-                range=list(TOPIC_COLORS.values()),
-            ),
-            legend=None,
-        ),
+        color=topic_color(legend=None),
         tooltip=[
             alt.Tooltip("event_date:T", title="Event Date"),
             alt.Tooltip("topic:N", title="Topic"),
@@ -843,14 +850,7 @@ else:
         .encode(
             x=alt.X("event_date:T"),
             y=alt.Y("y_pos:Q"),
-            color=alt.Color(
-                "topic:N",
-                scale=alt.Scale(
-                    domain=list(TOPIC_COLORS.keys()),
-                    range=list(TOPIC_COLORS.values()),
-                ),
-                legend=None,
-            ),
+            color=topic_color(legend=None),
             tooltip=[
                 alt.Tooltip("event_date:T", title="Event Date"),
                 alt.Tooltip("topic:N", title="Topic"),
@@ -872,218 +872,17 @@ else:
 
 st.altair_chart(topic_share_chart, use_container_width=True)
 
-st.markdown(
-    '<div class="insight-box">'
-    "<b>Key insight:</b> Topic attention shifts over time, and event markers help students connect "
-    "specific political moments with changes in media focus."
-    "</div>",
-    unsafe_allow_html=True,
-)
+insight("Event markers indicate periods with annotated events for the shown topics.")
 
 st.markdown("---")
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SECTION 3: Tone over time
+# SECTION 3: Diverging Bars – Deviation from Average
 # ═══════════════════════════════════════════════════════════════════════════
-st.markdown(
-    '<p class="section-header">3 &middot; The Tone of Political Coverage Over Time</p>',
-    unsafe_allow_html=True,
-)
-st.markdown(
-    '<p class="section-desc">'
-    "Drag to select a time range on the top chart — the bar chart below instantly "
-    "updates to show average outlet tone for that period. Click the legend to isolate outlets."
-    "</p>",
-    unsafe_allow_html=True,
-)
-
-# Monthly aggregation for the line chart (keeps data manageable)
-tone_monthly = tone_f.copy()
-tone_monthly["month"] = tone_monthly["date"].dt.to_period("M").dt.to_timestamp()
-tone_monthly_agg = (
-    tone_monthly.groupby(["month", "outlet"])["value"]
-    .mean()
-    .reset_index()
-)
-
-# Shared brush selection for cross-filter chart
-brush = alt.selection_interval(encodings=["x"])
-legend_sel = alt.selection_point(fields=["outlet"], bind="legend")
-
-# Top chart: line with brush
-brush_line = (
-    alt.Chart(tone_monthly_agg)
-    .mark_line(strokeWidth=2)
-    .encode(
-        x=alt.X("month:T", title="Date"),
-        y=alt.Y("value:Q", title="Avg Tone", scale=alt.Scale(zero=False)),
-        color=alt.Color(
-            "outlet:N",
-            title="Outlet",
-            scale=alt.Scale(
-                domain=list(OUTLET_COLORS.keys()),
-                range=list(OUTLET_COLORS.values()),
-            ),
-        ),
-        opacity=alt.condition(legend_sel, alt.value(1), alt.value(0.1)),
-        tooltip=["month:T", "outlet:N", alt.Tooltip("value:Q", format=".2f", title="Tone")],
-    )
-    .properties(height=300)
-    .add_params(brush, legend_sel)
-)
-
-brush_zero = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(strokeDash=[4, 4], color="gray").encode(y="y:Q")
-
-# Bottom chart: bar filtered by brush
-brush_bars = (
-    alt.Chart(tone_monthly_agg)
-    .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
-    .encode(
-        x=alt.X(
-            "outlet:N",
-            title="Outlet",
-            sort=alt.EncodingSortField(field="value", order="ascending"),
-            axis=alt.Axis(labelAngle=-30),
-        ),
-        y=alt.Y("mean(value):Q", title="Avg Tone (selected period)", scale=alt.Scale(zero=False)),
-        color=alt.Color(
-            "outlet:N",
-            scale=alt.Scale(
-                domain=list(OUTLET_COLORS.keys()),
-                range=list(OUTLET_COLORS.values()),
-            ),
-            legend=None,
-        ),
-        tooltip=[
-            alt.Tooltip("outlet:N", title="Outlet"),
-            alt.Tooltip("mean(value):Q", format=".2f", title="Avg Tone"),
-        ],
-    )
-    .transform_filter(brush)
-    .properties(height=250, title="Outlet tone for brushed period")
-)
-
-brush_bar_zero = (
-    alt.Chart(pd.DataFrame({"y": [0]}))
-    .mark_rule(strokeDash=[4, 4], color="gray")
-    .encode(y="y:Q")
-)
-
-cross_filter = alt.vconcat(
-    brush_line + brush_zero,
-    brush_bars + brush_bar_zero,
-).resolve_legend(color="independent")
-
-st.altair_chart(cross_filter, use_container_width=True)
-
-st.markdown(
-    '<div class="insight-box">'
-    "<b>Key insight:</b> Most outlets tend toward negative tone in political coverage "
-    "(below the zero line). Notice how sentiment dips around major political events "
-    "and then partially recovers."
-    "</div>",
-    unsafe_allow_html=True,
-)
-
-st.markdown("---")
-
-# ═══════════════════════════════════════════════════════════════════════════
-# SECTION 4: Tone Distribution Box Plots
-# ═══════════════════════════════════════════════════════════════════════════
-st.markdown(
-    '<p class="section-header">4 &middot; Tone Distribution by Outlet</p>',
-    unsafe_allow_html=True,
-)
-st.markdown(
-    '<p class="section-desc">'
-    "Averages can hide a lot. These box plots show the full spread of monthly "
-    "tone values — revealing which outlets are volatile and which are consistent."
-    "</p>",
-    unsafe_allow_html=True,
-)
-
-# Monthly tone per outlet for distribution
-tone_box = tone_f.copy()
-tone_box["month"] = tone_box["date"].dt.to_period("M").dt.to_timestamp()
-tone_box_monthly = (
-    tone_box.groupby(["month", "outlet"])["value"]
-    .mean()
-    .reset_index()
-)
-
-box_plot = (
-    alt.Chart(tone_box_monthly)
-    .mark_boxplot(extent="min-max", size=40)
-    .encode(
-        x=alt.X(
-            "outlet:N",
-            title="Outlet",
-            sort=alt.EncodingSortField(field="value", op="median", order="ascending"),
-            axis=alt.Axis(labelAngle=-30, labelFontSize=12),
-        ),
-        y=alt.Y("value:Q", title="Monthly Avg Tone", scale=alt.Scale(zero=False)),
-        color=alt.Color(
-            "outlet:N",
-            title="Outlet",
-            scale=alt.Scale(
-                domain=list(OUTLET_COLORS.keys()),
-                range=list(OUTLET_COLORS.values()),
-            ),
-            legend=None,
-        ),
-    )
-    .properties(height=380)
-)
-
-# Overlay strip/jitter for individual months
-strip = (
-    alt.Chart(tone_box_monthly)
-    .mark_circle(size=20, opacity=0.3)
-    .encode(
-        x=alt.X("outlet:N", sort=alt.EncodingSortField(field="value", op="median", order="ascending")),
-        y=alt.Y("value:Q"),
-        color=alt.Color(
-            "outlet:N",
-            scale=alt.Scale(
-                domain=list(OUTLET_COLORS.keys()),
-                range=list(OUTLET_COLORS.values()),
-            ),
-            legend=None,
-        ),
-        tooltip=[
-            alt.Tooltip("outlet:N", title="Outlet"),
-            alt.Tooltip("month:T", title="Month"),
-            alt.Tooltip("value:Q", format=".2f", title="Tone"),
-        ],
-    )
-)
-
-st.altair_chart(box_plot + strip, use_container_width=True)
-
-st.markdown(
-    '<div class="insight-box">'
-    "<b>Key insight:</b> Some outlets (like WSJ) show a much wider spread in tone, meaning their "
-    "coverage varies greatly month to month. Others are more consistently negative. "
-    "The individual dots let you spot the extreme months."
-    "</div>",
-    unsafe_allow_html=True,
-)
-
-st.markdown("---")
-
-# ═══════════════════════════════════════════════════════════════════════════
-# SECTION 5: Diverging Bars – Deviation from Average
-# ═══════════════════════════════════════════════════════════════════════════
-st.markdown(
-    '<p class="section-header">5 &middot; How Each Outlet Deviates from the Average</p>',
-    unsafe_allow_html=True,
-)
-st.markdown(
-    '<p class="section-desc">'
-    "For each topic, how does each outlet compare to the overall average? "
-    "Bars extending left are more negative than average; bars extending right are less negative."
-    "</p>",
-    unsafe_allow_html=True,
+section(
+    "3 &middot; How Each Outlet Deviates from the Average",
+    "For each topic, this chart compares each outlet to the topic average. "
+    "Bars left of zero are more negative than average; bars right are less negative.",
 )
 
 # Compute per-outlet, per-topic avg tone and deviation from topic mean
@@ -1156,29 +955,66 @@ diverging = alt.layer(div_bars, div_zero).facet(
 
 st.altair_chart(diverging, use_container_width=True)
 
-st.markdown(
-    '<div class="insight-box">'
-    "<b>Key insight:</b> Fox News tends to be more negative than average on Immigration "
-    "and Foreign Policy, while Economy coverage shows the smallest outlet-to-outlet divergence. "
-    "This reveals which topics drive the most editorial disagreement."
-    "</div>",
-    unsafe_allow_html=True,
-)
+insight("Deviation is computed from the topic average within the current filters.")
 
 st.markdown("---")
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SECTION 6: Topic deep-dive – pick a topic, compare outlets
+# SECTION 4: Tone Distribution Box Plots
 # ═══════════════════════════════════════════════════════════════════════════
-st.markdown(
-    '<p class="section-header">6 &middot; Deep Dive: Compare Outlets on a Topic</p>',
-    unsafe_allow_html=True,
+section(
+    "4 &middot; Tone Distribution by Outlet",
+    "These box plots show the full spread of monthly outlet tone values in the selected period.",
 )
-st.markdown(
-    '<p class="section-desc">'
-    "Select a topic to compare outlet tone side-by-side over time."
-    "</p>",
-    unsafe_allow_html=True,
+
+# Monthly tone per outlet for distribution
+tone_box = tone_f.copy()
+tone_box["month"] = tone_box["date"].dt.to_period("M").dt.to_timestamp()
+tone_box_monthly = tone_box.groupby(["month", "outlet"])["value"].mean().reset_index()
+
+box_plot = (
+    alt.Chart(tone_box_monthly)
+    .mark_boxplot(extent="min-max", size=40)
+    .encode(
+        x=alt.X(
+            "outlet:N",
+            title="Outlet",
+            sort=alt.EncodingSortField(field="value", op="median", order="ascending"),
+            axis=alt.Axis(labelAngle=-30, labelFontSize=12),
+        ),
+        y=alt.Y("value:Q", title="Monthly Avg Tone", scale=alt.Scale(zero=False)),
+        color=outlet_color(legend=None),
+    )
+    .properties(height=380)
+)
+
+strip = (
+    alt.Chart(tone_box_monthly)
+    .mark_circle(size=20, opacity=0.3)
+    .encode(
+        x=alt.X("outlet:N", sort=alt.EncodingSortField(field="value", op="median", order="ascending")),
+        y=alt.Y("value:Q"),
+        color=outlet_color(legend=None),
+        tooltip=[
+            alt.Tooltip("outlet:N", title="Outlet"),
+            alt.Tooltip("month:T", title="Month"),
+            alt.Tooltip("value:Q", format=".2f", title="Tone"),
+        ],
+    )
+)
+
+st.altair_chart(box_plot + strip, use_container_width=True)
+
+insight("Box = central range, whiskers = min/max monthly values, dots = individual months.")
+
+st.markdown("---")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION 5: Topic deep-dive – pick a topic, compare outlets
+# ═══════════════════════════════════════════════════════════════════════════
+section(
+    "5 &middot; Deep Dive: Compare Outlets on a Topic",
+    "Select a topic to compare outlet tone side-by-side over time.",
 )
 
 deep_topic = st.selectbox("Choose a topic:", selected_topics, index=0, key="deep_topic")
@@ -1194,14 +1030,7 @@ deep_tone_chart = (
     .encode(
         x=alt.X("date:T", title="Date"),
         y=alt.Y("value:Q", title="Tone", scale=alt.Scale(zero=False)),
-        color=alt.Color(
-            "outlet:N",
-            title="Outlet",
-            scale=alt.Scale(
-                domain=list(OUTLET_COLORS.keys()),
-                range=list(OUTLET_COLORS.values()),
-            ),
-        ),
+        color=outlet_color(),
         opacity=alt.condition(outlet_sel2, alt.value(1), alt.value(0.1)),
         tooltip=["date:T", "outlet:N", alt.Tooltip("value:Q", format=".2f")],
     )
@@ -1210,25 +1039,18 @@ deep_tone_chart = (
     .interactive()
 )
 
-zero_line2 = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(strokeDash=[4, 4], color="gray").encode(y="y:Q")
+zero_line2 = zero_rule("y", 0)
 
 st.altair_chart(deep_tone_chart + zero_line2, use_container_width=True)
 
 st.markdown("---")
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SECTION 7: Outlet Sentiment Ranking – Bump Chart
+# SECTION 6: Outlet Sentiment Ranking – Bump Chart
 # ═══════════════════════════════════════════════════════════════════════════
-st.markdown(
-    '<p class="section-header">7 &middot; Outlet Sentiment Rankings Over Time</p>',
-    unsafe_allow_html=True,
-)
-st.markdown(
-    '<p class="section-desc">'
-    "Which outlet is the most negative each year? This bump chart ranks outlets from "
-    "most negative (rank 1, top) to least negative. Watch the lines cross as rankings shift."
-    "</p>",
-    unsafe_allow_html=True,
+section(
+    "6 &middot; Outlet Sentiment Rankings Over Time",
+    "This bump chart ranks outlets by yearly average tone: rank 1 is most negative.",
 )
 
 # Compute yearly avg tone per outlet, then rank
@@ -1252,14 +1074,7 @@ bump_lines = (
             sort="ascending",
             axis=alt.Axis(labelFontSize=13),
         ),
-        color=alt.Color(
-            "outlet:N",
-            title="Outlet",
-            scale=alt.Scale(
-                domain=list(OUTLET_COLORS.keys()),
-                range=list(OUTLET_COLORS.values()),
-            ),
-        ),
+        color=outlet_color(),
         opacity=alt.condition(outlet_sel3, alt.value(1), alt.value(0.15)),
         tooltip=[
             alt.Tooltip("year:O", title="Year"),
@@ -1277,13 +1092,7 @@ bump_points = (
     .encode(
         x=alt.X("year:O"),
         y=alt.Y("rank:O", sort="ascending"),
-        color=alt.Color(
-            "outlet:N",
-            scale=alt.Scale(
-                domain=list(OUTLET_COLORS.keys()),
-                range=list(OUTLET_COLORS.values()),
-            ),
-        ),
+        color=outlet_color(title=None),
         opacity=alt.condition(outlet_sel3, alt.value(1), alt.value(0.15)),
         tooltip=[
             alt.Tooltip("year:O", title="Year"),
@@ -1303,13 +1112,7 @@ bump_labels = (
         x=alt.X("year:O"),
         y=alt.Y("rank:O", sort="ascending"),
         text=alt.Text("outlet:N"),
-        color=alt.Color(
-            "outlet:N",
-            scale=alt.Scale(
-                domain=list(OUTLET_COLORS.keys()),
-                range=list(OUTLET_COLORS.values()),
-            ),
-        ),
+        color=outlet_color(title=None),
         opacity=alt.condition(outlet_sel3, alt.value(1), alt.value(0.15)),
     )
 )
@@ -1319,15 +1122,7 @@ st.altair_chart(
     use_container_width=True,
 )
 
-st.markdown(
-    '<div class="insight-box">'
-    "<b>Key insight:</b> Rankings are not static — outlets swap positions frequently. "
-    "An outlet that was the most negative one year can become moderate the next, "
-    "suggesting tone is driven by editorial choices around specific events rather than "
-    "a fixed institutional bias."
-    "</div>",
-    unsafe_allow_html=True,
-)
+insight("Line crossings indicate shifts in relative outlet ranking across years.")
 
 st.markdown("---")
 
@@ -1339,32 +1134,37 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-col1, col2 = st.columns(2)
+topic_means = tone_f.groupby("topic")["value"].mean().sort_values()
+outlet_means = tone_f.groupby("outlet")["value"].mean().sort_values()
+overall_avg = tone_f["value"].mean()
+overall_med = tone_f["value"].median()
 
-with col1:
-    st.markdown("""
-    **Negativity dominates political coverage.** Across all 7 outlets and 6 topics,
-    the average tone of political reporting is consistently negative. This reflects
-    a well-documented pattern in media studies, but seeing it quantified across
-    outlets makes the scale clear.
+ts_key = smooth_topic_share(topic_share_f.copy(), smoothing)
+if ts_key.empty:
+    lead_topic = "n/a"
+    lead_topic_share = np.nan
+else:
+    ts_key["month"] = ts_key["date"].dt.to_period("M").dt.to_timestamp()
+    ts_month = ts_key.groupby(["month", "topic"])["topic_share_smoothed"].mean().reset_index()
+    month_leaders = ts_month.loc[ts_month.groupby("month")["topic_share_smoothed"].idxmax()]
+    lead_counts = month_leaders["topic"].value_counts()
+    lead_topic = lead_counts.index[0]
+    lead_topic_share = lead_counts.iloc[0] / len(month_leaders)
 
-    **Coverage priorities differ.** While Government and Elections dominate everywhere,
-    the relative attention given to Immigration, Economy, and Foreign Policy varies
-    meaningfully between outlets — reflecting different editorial priorities and
-    audience expectations.
-    """)
+lead_topic_line = (
+    "Dominant monthly topic: n/a"
+    if pd.isna(lead_topic_share)
+    else f"Most frequent monthly lead topic: **{lead_topic}** ({lead_topic_share:.0%} of months)."
+)
 
-with col2:
-    st.markdown("""
-    **Election years amplify negativity.** Sentiment dips are most pronounced around
-    election cycles (2018, 2020, 2024), suggesting that political campaign coverage
-    drives more negative framing.
-
-    **No outlet is truly "neutral".** Every outlet in this dataset shows a measurable
-    negative bias in political tone, though the degree varies. This matters for media
-    literacy — understanding that all sources carry some sentiment framing helps
-    students consume news more critically.
-    """)
+st.markdown(
+    f"- Overall average tone in current filters: **{overall_avg:.2f}** (median: **{overall_med:.2f}**).\n"
+    f"- Most negative topic average: **{topic_means.index[0]} ({topic_means.iloc[0]:.2f})**.\n"
+    f"- Least negative topic average: **{topic_means.index[-1]} ({topic_means.iloc[-1]:.2f})**.\n"
+    f"- Most negative outlet average: **{outlet_means.index[0]} ({outlet_means.iloc[0]:.2f})**.\n"
+    f"- Least negative outlet average: **{outlet_means.index[-1]} ({outlet_means.iloc[-1]:.2f})**.\n"
+    f"- {lead_topic_line}"
+)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # FOOTER
