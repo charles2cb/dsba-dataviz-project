@@ -447,6 +447,32 @@ def smooth_topic_share(df, window):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# TONE EXPLAINER
+# ═══════════════════════════════════════════════════════════════════════════
+st.markdown(
+    """
+<div style="background:#f0f4ff;border-left:4px solid #3b82f6;border-radius:6px;padding:14px 18px;margin-bottom:18px;font-size:0.93rem;line-height:1.6;">
+<strong>What is Tone?</strong><br>
+Tone is a numeric sentiment score computed by the
+<a href="https://www.gdeltproject.org/" target="_blank">GDELT Project</a>
+for every batch of news articles. It equals the <em>percentage of positive-sentiment words</em>
+minus the <em>percentage of negative-sentiment words</em> found in the article text.
+A <strong>negative value</strong> means the coverage used more negative language than positive;
+a <strong>positive value</strong> means the reverse. Because news tends to focus on conflict and
+problems, most values in this dataset are negative (overall mean ≈ −2).<br><br>
+<strong>How to read these charts:</strong><br>
+• <em>Heatmap</em> — each cell is the average tone for one topic (row) in one time period (column).
+Darker cells = more negative coverage. Lighter/yellower cells = less negative or slightly positive.
+Click a cell to see how individual outlets compared that period.<br>
+• <em>Box plots (Section 4)</em> — each box shows the spread of weekly tone values for an outlet.
+The median line is the typical weekly tone; wide boxes mean high volatility across weeks.<br>
+• Tone values are capped at ±10 to remove extreme outliers without affecting the bulk of the data.
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+# ═══════════════════════════════════════════════════════════════════════════
 # SECTION 1: Topic Evolution Heatmap  ★ MAIN VISUALIZATION ★
 # ═══════════════════════════════════════════════════════════════════════════
 section(
@@ -687,7 +713,6 @@ marker_i = alt.Chart(event_markers).mark_text(
 )
 
 heatmap_chart = (heatmap_rects + heatmap_text + marker_i).add_params(cell_sel).properties(
-    width=min(1800, max(900, 42 * len(period_order))),
     height=max(340, 56 * len(y_sorted)),
     title=alt.Title(
         text="How tone for each topic changed over time",
@@ -722,7 +747,6 @@ outlet_bars = (
 )
 outlet_zero = zero_rule("y", 0)
 outlet_chart = (outlet_bars + outlet_zero).properties(
-    width=min(1800, max(900, 42 * len(period_order))),
     height=270,
     title="Outlet tone breakdown (click a heatmap cell)",
 )
@@ -747,7 +771,6 @@ event_panel_text = event_panel_base.mark_text(align="left", dx=16, fontSize=12).
     color=alt.condition("datum.is_fallback", alt.value("#6b7280"), alt.value("#1f2937")),
 )
 event_panel_chart = (event_panel_marks + event_panel_text).properties(
-    width=min(1800, max(900, 42 * len(period_order))),
     height=150,
     title="Event notes for selected cell",
 )
@@ -964,16 +987,16 @@ st.markdown("---")
 # ═══════════════════════════════════════════════════════════════════════════
 section(
     "4 &middot; Tone Distribution by Outlet",
-    "These box plots show the full spread of monthly outlet tone values in the selected period.",
+    "These box plots show the full spread of weekly outlet tone values in the selected period.",
 )
 
-# Monthly tone per outlet for distribution
+# Weekly tone per outlet for distribution
 tone_box = tone_f.copy()
-tone_box["month"] = tone_box["date"].dt.to_period("M").dt.to_timestamp()
-tone_box_monthly = tone_box.groupby(["month", "outlet"])["value"].mean().reset_index()
+tone_box["week"] = tone_box["date"].dt.to_period("W").dt.to_timestamp()
+tone_box_weekly = tone_box.groupby(["week", "outlet"])["value"].mean().reset_index()
 
 box_plot = (
-    alt.Chart(tone_box_monthly)
+    alt.Chart(tone_box_weekly)
     .mark_boxplot(extent="min-max", size=40)
     .encode(
         x=alt.X(
@@ -982,14 +1005,14 @@ box_plot = (
             sort=alt.EncodingSortField(field="value", op="median", order="ascending"),
             axis=alt.Axis(labelAngle=-30, labelFontSize=12),
         ),
-        y=alt.Y("value:Q", title="Monthly Avg Tone", scale=alt.Scale(zero=False)),
+        y=alt.Y("value:Q", title="Weekly Avg Tone", scale=alt.Scale(zero=False)),
         color=outlet_color(legend=None),
     )
     .properties(height=380)
 )
 
 strip = (
-    alt.Chart(tone_box_monthly)
+    alt.Chart(tone_box_weekly)
     .mark_circle(size=20, opacity=0.3)
     .encode(
         x=alt.X("outlet:N", sort=alt.EncodingSortField(field="value", op="median", order="ascending")),
@@ -997,7 +1020,7 @@ strip = (
         color=outlet_color(legend=None),
         tooltip=[
             alt.Tooltip("outlet:N", title="Outlet"),
-            alt.Tooltip("month:T", title="Month"),
+            alt.Tooltip("week:T", title="Week"),
             alt.Tooltip("value:Q", format=".2f", title="Tone"),
         ],
     )
@@ -1005,7 +1028,7 @@ strip = (
 
 st.altair_chart(box_plot + strip, use_container_width=True)
 
-insight("Box = central range, whiskers = min/max monthly values, dots = individual months.")
+insight("Box = central range, whiskers = min/max weekly values, dots = individual weeks.")
 
 st.markdown("---")
 
