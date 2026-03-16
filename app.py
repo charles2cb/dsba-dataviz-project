@@ -85,6 +85,10 @@ st.markdown("""
     div[data-testid="stSidebar"] {
         background: #f8f9fb;
     }
+    /* Scale main content to prevent horizontal overflow */
+    div[data-testid="stMainBlockContainer"] {
+        zoom: 0.9;
+    }
 </style>
 """, unsafe_allow_html=True)
 
