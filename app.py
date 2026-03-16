@@ -713,7 +713,7 @@ marker_i = alt.Chart(event_markers).mark_text(
 )
 
 heatmap_chart = (heatmap_rects + heatmap_text + marker_i).add_params(cell_sel).properties(
-    height=max(340, 56 * len(y_sorted)),
+    height=max(260, 46 * len(y_sorted)),
     title=alt.Title(
         text="How tone for each topic changed over time",
         subtitle="Click for outlet details. Cells with i include event annotations.",
@@ -732,10 +732,10 @@ outlet_bars = (
         x=alt.X(
             "outlet:N",
             title="Outlet",
-            sort=alt.EncodingSortField(field="avg_tone", order="ascending"),
+            sort=OUTLETS,
             axis=alt.Axis(labelAngle=-25, labelFontSize=12),
         ),
-        y=alt.Y("avg_tone:Q", title="Avg Tone", scale=alt.Scale(zero=False)),
+        y=alt.Y("avg_tone:Q", title="Avg Tone", scale=alt.Scale(domain=[tone_min, tone_max])),
         color=outlet_color(legend=None),
         tooltip=[
             alt.Tooltip("topic:N", title="Topic"),
@@ -747,7 +747,7 @@ outlet_bars = (
 )
 outlet_zero = zero_rule("y", 0)
 outlet_chart = (outlet_bars + outlet_zero).properties(
-    height=270,
+    height=210,
     title="Outlet tone breakdown (click a heatmap cell)",
 )
 
@@ -771,7 +771,7 @@ event_panel_text = event_panel_base.mark_text(align="left", dx=16, fontSize=12).
     color=alt.condition("datum.is_fallback", alt.value("#6b7280"), alt.value("#1f2937")),
 )
 event_panel_chart = (event_panel_marks + event_panel_text).properties(
-    height=150,
+    height=110,
     title="Event notes for selected cell",
 )
 
@@ -957,7 +957,7 @@ div_base = alt.Chart(deviation_df).encode(
     ],
 )
 
-div_bars = div_base.mark_bar(cornerRadius=3).properties(height=80, width=500)
+div_bars = div_base.mark_bar(cornerRadius=3).properties(height=65)
 
 # Altair cannot layer after faceting, so layer first then facet.
 # Use the same source table to keep facet data at the top level.
@@ -1008,7 +1008,7 @@ box_plot = (
         y=alt.Y("value:Q", title="Weekly Avg Tone", scale=alt.Scale(zero=False)),
         color=outlet_color(legend=None),
     )
-    .properties(height=380)
+    .properties(height=280)
 )
 
 strip = (
@@ -1058,7 +1058,7 @@ deep_tone_chart = (
         tooltip=["date:T", "outlet:N", alt.Tooltip("value:Q", format=".2f")],
     )
     .add_params(outlet_sel2)
-    .properties(height=350, title=f"Tone over Time – {deep_topic}")
+    .properties(height=280, title=f"Tone over Time – {deep_topic}")
     .interactive()
 )
 
@@ -1141,7 +1141,7 @@ bump_labels = (
 )
 
 st.altair_chart(
-    (bump_lines + bump_points + bump_labels).properties(height=400),
+    (bump_lines + bump_points + bump_labels).properties(height=300),
     use_container_width=True,
 )
 
